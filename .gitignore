@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+*.joblib
+node_modules/
+.next/
+*.csv
+*.zip
+venv/
+.env.local
