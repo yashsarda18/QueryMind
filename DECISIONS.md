@@ -49,6 +49,8 @@ Tradeoffs: Groq is free tier with generous limits, sub-second inference
 Interview talking point: "I chose Groq because latency matters for a live demo — 
 Groq's inference speed made the product feel responsive, not like a research prototype."
 
+> **Superseded by D016** — see below. Llama 3.1/3.3 70B were deprecated by Groq; migrated to openai/gpt-oss-120b.
+
 ### D006 — XGBoost for delivery delay classifier
 Date: 2026-06-29
 Context: Need ML model to predict whether an order will be delivered late
@@ -87,6 +89,86 @@ Tradeoffs: Simple, no extra services, queryable with SQL
 Interview talking point: "I logged every prediction to PostgreSQL so I can query prediction 
 history, monitor for drift, and use real traffic data to retrain the model later."
 
+### D010 — psycopg3 over psycopg2 for database driver
+Date: 2026-06-30
+Context: Needed a Python driver to connect to PostgreSQL for schema introspection and query execution
+Decision: psycopg3 (`psycopg` package)
+Alternatives considered: psycopg2 (more established, sync-only), SQLAlchemy (ORM, too much abstraction for raw dynamic SQL execution)
+Tradeoffs: Slightly less mature ecosystem than psycopg2, but native async support via `psycopg.AsyncConnection` avoids a refactor when FastAPI (Day 3) needs async database calls
+Interview talking point: "I chose psycopg3 over the more common psycopg2 because I knew Day 3 would need async FastAPI endpoints — picking the async-native driver upfront avoided a rewrite later."
+
+### D011 — Dynamic schema introspection via information_schema
+Date: 2026-06-30
+Context: The LLM needs accurate, current knowledge of the database schema to generate correct SQL
+Decision: Query PostgreSQL's `information_schema.columns` and `information_schema.table_constraints` at runtime rather than hardcoding the schema
+Alternatives considered: Hardcoded Python dict of table/column names
+Tradeoffs: Slightly more code upfront, but the schema injector auto-updates if tables or columns ever change — no manual sync required
+Interview talking point: "The system introspects the live schema rather than relying on a stale hardcoded copy — if I add a column tomorrow, the LLM sees it automatically."
+
+### D012 — CREATE TABLE-style DDL as schema format for the LLM
+Date: 2026-06-30
+Context: Needed to decide how to represent the schema in the prompt sent to the LLM
+Decision: Format schema as realistic `CREATE TABLE` DDL statements rather than a custom compact notation
+Alternatives considered: Lightweight custom format like `table(col: type, ...)`
+Tradeoffs: More verbose, slightly more tokens per request, but LLMs are heavily trained on real SQL DDL and produce more accurate queries when the schema resembles familiar syntax
+Interview talking point: "I formatted the schema as real DDL because LLMs perform better against patterns they've seen extensively in training — a custom notation would have required the model to generalize in ways it's less reliable at."
+
+### D013 — Added real foreign key constraints to the database
+Date: 2026-06-30
+Context: Day 1's data load only declared primary keys — no foreign key relationships were enforced at the database level, despite the relationships existing conceptually
+Decision: Added 7 explicit `FOREIGN KEY` constraints via `ALTER TABLE`, enabling automated FK discovery through `information_schema`
+Alternatives considered: Hardcoding the relationship map in Python instead of enforcing it in the database
+Tradeoffs: Found and fixed 2 real data-quality issues in the process (two product categories — `pc_gamer` and a kitchen-appliances category — had no matching row in the translation table); required inserting 2 missing translation rows before the constraints would apply cleanly
+Interview talking point: "Adding real constraints surfaced two genuine data-quality issues in a well-known, supposedly clean dataset. I chose to fix the gap rather than hardcode around it, since enforced referential integrity is the more production-correct approach."
+
+### D014 — SQL validation layer using sqlglot (STAR #1)
+Date: 2026-06-30
+Context: LLM-generated SQL can hallucinate table or column names that don't exist in the schema
+Decision: Parse generated SQL with `sqlglot` and validate every referenced table and column against the real schema before execution; reject anything unrecognized
+Alternatives considered: Regex-based string matching
+Tradeoffs: Validates at table level strictly and column level more loosely (checking columns exist somewhere in the schema, not resolved to their exact source table) — a deliberate scope tradeoff to avoid building a full SQL semantic resolver
+Interview talking point: "I used a proper SQL parser instead of regex because regex breaks on subqueries, aliases, and quoted identifiers — exactly the kind of edge case that would let bad SQL slip through silently."
+
+### D015 — Restricted SQL generation to SELECT-only with row limits
+Date: 2026-06-30
+Context: LLM-generated SQL will eventually execute automatically against production data
+Decision: System prompt enforces SELECT-only generation (no INSERT/UPDATE/DELETE/DROP/ALTER), with a default `LIMIT 20` unless the user requests a specific row count
+Alternatives considered: Unrestricted generation with no row cap
+Tradeoffs: None significant — protects against destructive queries and keeps token usage predictable on Groq's free tier
+Interview talking point: "Since this SQL executes automatically with no human in the loop, restricting to read-only operations was a non-negotiable safety boundary, not an afterthought."
+
+### D016 — Switched LLM model from Llama 3.1/3.3 70B to openai/gpt-oss-120b
+Date: 2026-06-30
+Context: Groq announced deprecation of `llama-3.3-70b-versatile` (and `llama-3.1-70b-versatile` was already deprecated in early 2025) on June 17, 2026
+Decision: Use `openai/gpt-oss-120b`, Groq's recommended replacement model
+Alternatives considered: Continuing with `llama-3.3-70b-versatile` until forced migration
+Tradeoffs: Comparable quality and speed, avoids building the project on a model already flagged for removal
+Interview talking point: "I checked Groq's current model documentation rather than assuming my original plan was still valid — the model I'd originally chosen had already been flagged for deprecation, so I migrated proactively instead of getting blocked mid-build."
+
+### D017 — Sample categorical values injected into schema context
+Date: 2026-06-30
+Context: Testing revealed the LLM generated `customer_state = 'São Paulo'` instead of the correct stored value `'SP'`, since DDL alone shows column names and types but never actual data values
+Decision: Centralized `CATEGORICAL_COLUMNS` list identifies known categorical columns (state, city, status, payment type, product category); their distinct sample values are queried and appended as inline comments in the generated DDL
+Alternatives considered: Leaving the issue unaddressed as a documented limitation
+Tradeoffs: Adds a small number of extra queries when building schema context, and slightly increases prompt token count, but directly fixes a real-world failure mode users would hit constantly (e.g. asking about "São Paulo" rather than "SP")
+Interview talking point: "Testing surfaced a real semantic gap — the schema told the model column names but not column *values*. I fixed it at the root, in the schema injector, with one centralized function, rather than patching individual queries."
+
+### D018 — Clarifying column notes for ambiguous schema semantics
+Date: 2026-06-30
+Context: Testing revealed the LLM defaulted to grouping by `customer_id` instead of `customer_unique_id` when answering "which customers placed more than 3 orders" — Olist's dataset uses `customer_id` as a per-order identifier and `customer_unique_id` as the true per-person identifier, a distinction invisible from column names and types alone
+Decision: Added a `COLUMN_NOTES` dict alongside `CATEGORICAL_COLUMNS`, injecting clarifying inline comments into the DDL for semantically ambiguous columns (e.g. "unique per order, NOT per person")
+Alternatives considered: Leaving the ambiguity undocumented and accepting incorrect SQL on customer-uniqueness questions
+Tradeoffs: Comments reduce but do not reliably eliminate the failure rate — across 2 independent test runs with identical schema context, the model defaulted to `customer_id` both times rather than `customer_unique_id`, despite the clarifying comment. This suggests the comment's influence is weak rather than the failure being random variance, and that a stronger directive prompt rule (rather than a descriptive comment) would likely be needed for reliable correction.
+Interview talking point: "I found a subtle data semantics issue specific to this dataset — two ID columns that look interchangeable but aren't — and documented it directly in the schema context the LLM sees. It also taught me a real limitation: LLM steering reduces error rates, it doesn't guarantee determinism."
+
+### D019 — Hardened SQL validation against CTE false positives
+Date: 2026-06-30
+Context: After adding a system prompt rule directing the LLM to use CTEs for complex window-function queries (to fix a Postgres GROUP BY error on day-over-day calculations), the validation layer began rejecting valid queries — `sqlglot` correctly identified CTE names (e.g. `daily_counts`) as table references, but the validator had no way to distinguish a query-local CTE alias from an actual hallucinated table
+Decision: Extended `validate_sql()` to collect all `exp.CTE` alias names from the parsed query and exclude them from the "unknown table" check, mirroring the existing pattern used for column aliases
+Alternatives considered: Removing the CTE-encouraging prompt rule instead of fixing the validator
+Tradeoffs: None significant — this is the correct fix, since CTEs are a standard, valid SQL construct and the validator's job is to catch genuine hallucinations, not reject correct SQL using legitimate features
+Interview talking point: "Hardening the validation layer wasn't a single pass — first I found alias false positives, then CTE false positives, both surfaced through real testing rather than upfront assumptions. That iterative discovery process is exactly what I'd expect in a real production system."
+
 ---
 
 ## Data Insights
@@ -108,6 +190,11 @@ history, monitor for drift, and use real traffic data to retrain the model later
 - Late deliveries correlate with lower review scores (seen in seller analysis)
 - Top revenue seller has 11.49% late rate — above platform average of 8.11%
 
+### Day 2 additional finding
+- Found 2 data-quality gaps in product_category_name_translation: missing translations 
+  for `pc_gamer` (3 products) and `portateis_cozinha_e_preparadores_de_alimentos`. 
+  Fixed by inserting translation rows rather than altering product data.
+
 ---
 
 ## SQL Patterns Learned
@@ -123,3 +210,28 @@ history, monitor for drift, and use real traffic data to retrain the model later
 - IS NOT NULL — always filter nulls on delivery date columns
 - ROUND(value, 2) — always round money values
 - COUNT(DISTINCT column) — avoid double counting in JOINs
+
+---
+
+## Known Limitations (as of end of Day 2)
+
+### LLM non-determinism on customer identity questions
+Questions involving "customers" sometimes use `customer_id` (per-order identifier) instead of 
+the correct `customer_unique_id` (per-person identifier), despite a clarifying schema comment. 
+Confirmed across 2 independent test runs with identical context — both defaulted incorrectly. 
+A descriptive comment alone is insufficient; a stronger directive prompt rule would likely be 
+needed to fix this reliably. Deferred — not core to Day 2 scope, revisit if it surfaces again 
+during Day 3+ testing.
+
+### Complex window-function queries occasionally produce invalid SQL on first attempt
+One test question (day-over-day percentage change using LAG over grouped data) initially failed 
+with a Postgres GROUP BY error. Fixed via a combination of (1) an explicit system prompt rule 
+directing the LLM to use CTEs for this pattern, and (2) hardening the validation layer to not 
+flag CTE aliases as hallucinated tables. Resolved and verified working as of end of Day 2.
+
+### Validation layer scope
+`validate_sql()` checks that every referenced table exists in the schema (strict) and that every 
+referenced column exists *somewhere* in the schema (loose — not resolved to its specific source 
+table). This was a deliberate scope decision to avoid building a full SQL semantic resolver. 
+It will not catch a column being referenced against the wrong table if both the column name and 
+the table name are independently valid elsewhere in the schema.
