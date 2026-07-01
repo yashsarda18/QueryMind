@@ -169,6 +169,45 @@ Alternatives considered: Removing the CTE-encouraging prompt rule instead of fix
 Tradeoffs: None significant — this is the correct fix, since CTEs are a standard, valid SQL construct and the validator's job is to catch genuine hallucinations, not reject correct SQL using legitimate features
 Interview talking point: "Hardening the validation layer wasn't a single pass — first I found alias false positives, then CTE false positives, both surfaced through real testing rather than upfront assumptions. That iterative discovery process is exactly what I'd expect in a real production system."
 
+### D020 — Sync route handlers over async, despite async-native driver choice
+Date: 2026-07-01
+Context: psycopg3 was chosen in D010 specifically for native async support, and FastAPI supports async route handlers natively
+Decision: Day 3 endpoints (/health, /query, /history) use plain `def`, not `async def`
+Alternatives considered: Making all routes async to match the driver's capability
+Tradeoffs: Day 2's core functions (answer_question, execute_query, get_connection) are all synchronous. Mixing async route handlers with blocking sync calls inside them would block FastAPI's event loop, actively hurting performance rather than helping — the opposite of the intended benefit. Plain `def` routes run in FastAPI's thread pool automatically, which is safe with sync code.
+Interview talking point: "I deliberately kept routes synchronous even though the driver supports async, because half-async — async routes calling blocking code — is worse than fully sync. Async only pays off when the whole chain underneath is also async, which wasn't true yet for the Day 2 pipeline."
+
+### D021 — Redis cache key normalization (lowercase + whitespace collapse)
+Date: 2026-07-01
+Context: MD5-hashing the raw NL question string means trivial formatting differences (case, extra whitespace) produce different cache keys for what's effectively the same question
+Decision: Normalize the question (lowercase, collapse whitespace) before hashing, applied identically on both read and write paths
+Alternatives considered: Hash the raw string as-is; full semantic similarity matching via embeddings
+Tradeoffs: Catches formatting-level duplicates cheaply (near-zero cost, no new dependencies) but does not catch semantically equivalent rephrasings using different wording (e.g. "average value" vs "average order value") — see Known Limitations
+Interview talking point: "I caught a real gap during testing — identical questions with different casing or spacing were being treated as cache misses. Fixed it at the normalization step rather than the hashing step, since hashing can't be 'fuzzy' by design."
+
+### D022 — Query log rotation via DELETE...NOT IN, capped at 100 rows
+Date: 2026-07-01
+Context: An unbounded query_log table would grow indefinitely with every request
+Decision: After every insert, delete all rows except the 100 most recent (by created_at), using `DELETE FROM query_log WHERE id NOT IN (SELECT id ... ORDER BY created_at DESC LIMIT 100)`
+Alternatives considered: Let the table grow unbounded and only limit reads in /history (simpler code, but doesn't actually solve unbounded growth — just hides it from the API)
+Tradeoffs: One extra DELETE per request, negligible cost at this scale; guarantees the table never exceeds 100 rows at rest, not just at read time
+Interview talking point: "I chose to actually enforce the cap at write time rather than fake it at read time — the second approach is simpler but doesn't solve the real problem, it just hides it behind the API."
+
+### D023 — Redis-based rate limiting over in-memory counters
+Date: 2026-07-01
+Context: Needed to enforce 20 requests/minute per client
+Decision: Redis fixed-window counter per client IP (`ratelimit:<ip>`), using INCR + EXPIRE (set only on the first request in a window)
+Alternatives considered: In-memory Python dict/counter
+Tradeoffs: In-memory counters reset on every server restart and don't work correctly across multiple server instances (e.g. behind a load balancer) — each instance would track its own separate count, making the limit meaningless. Redis is shared and already running, with TTL support built in.
+Interview talking point: "I used Redis for rate limiting instead of an in-memory counter because rate limits need to be consistent across restarts and across multiple instances in production — an in-memory counter would silently break the moment you scale past one server."
+
+### D024 — Known limitation: client IP resolution behind a proxy
+Date: 2026-07-01
+Context: Rate limiting keys on `request.client.host`, the raw connection IP
+Decision: Accepted as-is for now; not fixed in Day 3
+Tradeoffs: This works correctly for local testing and direct connections, but once deployed behind a reverse proxy or load balancer (e.g. Railway in Day 7), the raw connection IP often reflects the proxy, not the real client — every user could appear as the same IP, making rate limiting ineffective. The standard fix is reading a forwarded-IP header (e.g. X-Forwarded-For) instead, but that header can be spoofed unless the proxy is trusted and configured to overwrite it.
+Interview talking point: "I flagged this rather than fixing it blind — trusting X-Forwarded-For without knowing exactly how Railway's proxy is configured could introduce a spoofing vector. This is something to verify against Railway's actual proxy behavior during Day 7 deployment, not guess at now."
+
 ---
 
 ## Data Insights
@@ -235,3 +274,12 @@ referenced column exists *somewhere* in the schema (loose — not resolved to it
 table). This was a deliberate scope decision to avoid building a full SQL semantic resolver. 
 It will not catch a column being referenced against the wrong table if both the column name and 
 the table name are independently valid elsewhere in the schema.
+
+### Cache matching is exact (normalized), not semantic
+The Redis cache (D021) catches formatting differences (case, whitespace) but treats 
+differently-worded questions with the same meaning (e.g. "average value" vs "average order 
+value") as distinct cache entries. A true fix requires embedding-based similarity matching 
+(e.g. sentence-transformers + cosine similarity), backed by a vector-search-capable store 
+(pgvector, or Redis with a vector module). This is a meaningfully larger scope than string-level 
+caching and was deliberately deferred rather than attempted mid-Day-3. Flagged as a strong 
+candidate for a post-completion improvement.

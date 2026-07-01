@@ -1,0 +1,40 @@
+from fastapi import FastAPI, Request, HTTPException
+from models import QueryRequest, QueryResponse, HistoryEntry
+from sql_engine import answer_question
+from database import get_connection, log_query, get_history
+from cache import get_cached_result, set_cached_result, check_rate_limit
+
+app = FastAPI(title = "QueryMind API")
+
+@app.get("/health")
+def health_check():
+    try:
+        conn = get_connection()
+        conn.close()
+        return {"status": "ok", "database": "connected"}
+    except Exception as e:
+        return {"status": "error", "database": str(e)}
+
+@app.post("/query", response_model=QueryResponse)
+def query(request: QueryRequest, http_request: Request):
+    client_id = http_request.client.host
+
+    if not check_rate_limit(client_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Max 20 requests per minute.")
+    cached = get_cached_result(request.question)
+    if cached is not None:
+        log_query(request.question, cached.get("sql"), cached["status"])
+        return cached
+    
+    result = answer_question(request.question)
+    if result["status"] == "success":
+        set_cached_result(request.question, result)
+    
+    log_query(request.question, result.get("sql"), result["status"])
+    return result
+
+@app.get("/history", response_model=list[HistoryEntry])
+def history(limit: int = 20):
+    return get_history(limit)
+
+    

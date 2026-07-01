@@ -59,6 +59,40 @@ def get_sample_values(table, column, limit=10):
     conn.close()
     return values
 
+def log_query(question: str, sql: str, status: str):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO query_log (question, sql, status) VALUES (%s, %s, %s)",
+                (question, sql, status)
+            )
+            cur.execute("""
+                DELETE FROM query_log
+                WHERE id NOT IN (
+                    SELECT id FROM query_log
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                )
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+        
+def get_history(limit: int = 20):
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, question, sql, status, created_at FROM query_log ORDER BY created_at DESC LIMIT %s",
+                (limit,)
+            )
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in rows]
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     # conn = get_connection()
     conn = get_raw_schema()
