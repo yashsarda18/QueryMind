@@ -1,0 +1,13 @@
+{
+  "pr_auc": 0.28783563462010214,
+  "scale_pos_weight_used": 11.326465420859288,
+  "tuned_threshold_metrics": {
+    "threshold": 0.7069234251976013,
+    "f1": 0.3597972972972973,
+    "precision": 0.32159033719174634,
+    "recall": 0.4083067092651757
+  },
+  "n_train": 77176,
+  "n_test": 19294,
+  "positive_rate_train": 0.08112625686741992
+}

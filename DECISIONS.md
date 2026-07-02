@@ -208,6 +208,24 @@ Decision: Accepted as-is for now; not fixed in Day 3
 Tradeoffs: This works correctly for local testing and direct connections, but once deployed behind a reverse proxy or load balancer (e.g. Railway in Day 7), the raw connection IP often reflects the proxy, not the real client — every user could appear as the same IP, making rate limiting ineffective. The standard fix is reading a forwarded-IP header (e.g. X-Forwarded-For) instead, but that header can be spoofed unless the proxy is trusted and configured to overwrite it.
 Interview talking point: "I flagged this rather than fixing it blind — trusting X-Forwarded-For without knowing exactly how Railway's proxy is configured could introduce a spoofing vector. This is something to verify against Railway's actual proxy behavior during Day 7 deployment, not guess at now."
 
+## D025 — Leakage-safe feature selection for delay classifier
+
+Only features knowable at order-purchase time were used (timestamps, geography, product dimensions/weight, price/freight, item/seller counts). Explicitly excluded: `order_delivered_carrier_date` and `order_delivered_customer_date` (the latter defines the label itself), and all of `order_reviews` (post-delivery, often caused by the delay itself — using it would be backwards causality). Seller historical late-rate was considered but deferred — see Post-Completion Improvements.
+
+## D026 — Class imbalance handled via scale_pos_weight, not resampling
+
+With an 8.11% positive rate, `scale_pos_weight` (computed as negative/positive ratio on the training split only, ≈11.3) was used instead of SMOTE or other resampling. Simpler pipeline, no synthetic data to justify, and sufficient given the modest but real lift achieved (PR-AUC 0.288 vs ~0.081 baseline, ~3.5x). Classification threshold was tuned via F1-maximization on the precision-recall curve (landed at 0.707) rather than left at the default 0.5, since that's the threshold actually shipped to `/predict`.
+
+## D027 — predict_proba over predict, with separate UI-badge buckets
+
+The `/predict` endpoint returns a continuous risk score (`predict_proba`) rather than a hard label, so downstream UI (Day 6 badges) can distinguish "barely risky" from "very likely late." Two separate thresholds are used deliberately: 0.707 (F1-optimal) for `is_late_predicted`, and looser placeholder cutoffs (0.3/0.6) for the green/amber/red badge — the badge is a softer "worth a second look" signal, not a restatement of the classification decision.
+
+## D028 — /predict scoped to single-order queries, no delivery-status filter
+
+Initial design pulled and rebuilt features for all ~96k orders on every `/predict` call — fixed same-day after recognizing it both violated the <80ms latency target (STAR #3) and was conceptually wrong: predicting delay only makes sense for orders that haven't been delivered yet, so no status filter is applied. Single-order query functions (`load_single_order_raw`, `load_single_order_items_agg`) and a shared `_add_derived_features()` helper were added so training and inference feature logic can't silently diverge.
+
+---
+
 ---
 
 ## Data Insights
@@ -283,3 +301,9 @@ value") as distinct cache entries. A true fix requires embedding-based similarit
 (pgvector, or Redis with a vector module). This is a meaningfully larger scope than string-level 
 caching and was deliberately deferred rather than attempted mid-Day-3. Flagged as a strong 
 candidate for a post-completion improvement.
+
+### Model performance ceiling (Day 4)
+Current PR-AUC (0.288) and F1 (0.36 at tuned threshold) are a real but modest lift over baseline. The single biggest known lever left unused is seller historical late-rate, deliberately deferred due to the time-aware aggregation required to compute it without leakage (must only use orders prior to the current order's timestamp). Revisit as a dedicated pass once Days 5–8 are complete, or as a documented future-work item if time runs out.
+
+### Risk badge cutoffs are placeholders (Day 4)
+The 0.3/0.6 green/amber/red boundaries were set without inspecting the real probability distribution on the test set. Revisit once more predictions have been observed, ideally against `metrics.json`'s score distribution.

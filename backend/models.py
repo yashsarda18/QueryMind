@@ -18,3 +18,11 @@ class HistoryEntry(BaseModel):
     status: str
     created_at: datetime
 
+class PredictRequest(BaseModel):
+    order_id: str
+
+class PredictResponse(BaseModel):
+    order_id: str
+    risk_score: float
+    is_late_predicted: bool
+    risk_badge: str

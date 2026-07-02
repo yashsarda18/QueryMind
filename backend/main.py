@@ -1,8 +1,14 @@
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
 from fastapi import FastAPI, Request, HTTPException
 from models import QueryRequest, QueryResponse, HistoryEntry
 from sql_engine import answer_question
 from database import get_connection, log_query, get_history
 from cache import get_cached_result, set_cached_result, check_rate_limit
+from ml_model import get_model
+from ml.features import load_single_order_raw, load_single_order_items_agg, build_inference_features
+from models import PredictRequest, PredictResponse
 
 app = FastAPI(title = "QueryMind API")
 
@@ -37,4 +43,22 @@ def query(request: QueryRequest, http_request: Request):
 def history(limit: int = 20):
     return get_history(limit)
 
+@app.post("/predict", response_model=PredictResponse)
+def predict(request: PredictRequest):
+    conn = get_connection()
+    order_row = load_single_order_raw(conn, request.order_id)
+    items_agg_row = load_single_order_items_agg(conn, request.order_id)
+    conn.close()
+
+    if order_row.empty or items_agg_row.empty:
+        raise HTTPException(status_code=404, detail="order_id not found")
+
+    features = build_inference_features(order_row, items_agg_row)
+    if features is None:
+        raise HTTPException(status_code=404, detail="order_id not found")
+
+    model = get_model()
+    result = model.predict(features)
+
+    return {"order_id": request.order_id, **result}
     
