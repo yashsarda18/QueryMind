@@ -208,23 +208,36 @@ Decision: Accepted as-is for now; not fixed in Day 3
 Tradeoffs: This works correctly for local testing and direct connections, but once deployed behind a reverse proxy or load balancer (e.g. Railway in Day 7), the raw connection IP often reflects the proxy, not the real client — every user could appear as the same IP, making rate limiting ineffective. The standard fix is reading a forwarded-IP header (e.g. X-Forwarded-For) instead, but that header can be spoofed unless the proxy is trusted and configured to overwrite it.
 Interview talking point: "I flagged this rather than fixing it blind — trusting X-Forwarded-For without knowing exactly how Railway's proxy is configured could introduce a spoofing vector. This is something to verify against Railway's actual proxy behavior during Day 7 deployment, not guess at now."
 
-## D025 — Leakage-safe feature selection for delay classifier
+### D025 — Leakage-safe feature selection for delay classifier
 
 Only features knowable at order-purchase time were used (timestamps, geography, product dimensions/weight, price/freight, item/seller counts). Explicitly excluded: `order_delivered_carrier_date` and `order_delivered_customer_date` (the latter defines the label itself), and all of `order_reviews` (post-delivery, often caused by the delay itself — using it would be backwards causality). Seller historical late-rate was considered but deferred — see Post-Completion Improvements.
 
-## D026 — Class imbalance handled via scale_pos_weight, not resampling
+### D026 — Class imbalance handled via scale_pos_weight, not resampling
 
 With an 8.11% positive rate, `scale_pos_weight` (computed as negative/positive ratio on the training split only, ≈11.3) was used instead of SMOTE or other resampling. Simpler pipeline, no synthetic data to justify, and sufficient given the modest but real lift achieved (PR-AUC 0.288 vs ~0.081 baseline, ~3.5x). Classification threshold was tuned via F1-maximization on the precision-recall curve (landed at 0.707) rather than left at the default 0.5, since that's the threshold actually shipped to `/predict`.
 
-## D027 — predict_proba over predict, with separate UI-badge buckets
+### D027 — predict_proba over predict, with separate UI-badge buckets
 
 The `/predict` endpoint returns a continuous risk score (`predict_proba`) rather than a hard label, so downstream UI (Day 6 badges) can distinguish "barely risky" from "very likely late." Two separate thresholds are used deliberately: 0.707 (F1-optimal) for `is_late_predicted`, and looser placeholder cutoffs (0.3/0.6) for the green/amber/red badge — the badge is a softer "worth a second look" signal, not a restatement of the classification decision.
 
-## D028 — /predict scoped to single-order queries, no delivery-status filter
+### D028 — /predict scoped to single-order queries, no delivery-status filter
 
 Initial design pulled and rebuilt features for all ~96k orders on every `/predict` call — fixed same-day after recognizing it both violated the <80ms latency target (STAR #3) and was conceptually wrong: predicting delay only makes sense for orders that haven't been delivered yet, so no status filter is applied. Single-order query functions (`load_single_order_raw`, `load_single_order_items_agg`) and a shared `_add_derived_features()` helper were added so training and inference feature logic can't silently diverge.
 
----
+### D029 — Next.js 16 instead of originally planned Next.js 14**
+`create-next-app@latest` installed Next.js 16.2.10 and Tailwind v4 at time of scaffolding (June/July 2026), not the version assumed when the stack table was first written. Tailwind v4 drops the separate `tailwind.config.ts` file in favor of CSS-based config via `@import "tailwindcss"` in `globals.css`. No functional impact — noted so the stack table and actual repo don't silently diverge.
+
+### D030 — CORS scoped to explicit origin, not wildcard**
+`backend/main.py` allows only `http://localhost:3000` via `CORSMiddleware`, rather than `allow_origins=["*"]`. Deliberate tight scoping — the frontend and backend are a known pair, and wildcard CORS is the kind of default that looks fine in a demo and wrong in a security review.
+
+### D031 — Columns derived from result keys, not a separate backend field**
+`QueryResponse` (see `backend/models.py`) returns `results: list[dict]` with no separate `columns` list. Frontend derives table headers via `Object.keys(results[0])` instead of requiring the backend to send redundant column metadata. Keeps the response payload minimal; revisit only if column order ever needs to be guaranteed independent of dict key order (Python 3.7+ dicts preserve insertion order, so not currently a risk).
+
+### D032 — Skipped shadcn/ui, hand-built components with Tailwind directly**
+The original stack table listed shadcn/ui for "polished UI without deep frontend knowledge." In practice, the custom dark theme (deep indigo palette, 3D hero pipeline, glass-morphic cards) needed enough visual control that shadcn's default component styles would have required overriding rather than saving effort. Chat input, button, and results table were hand-built with raw Tailwind utility classes instead. Known deviation from the original stack decision, logged rather than left silently inconsistent.
+
+### D033 — Live health-check status pill instead of a static "Live" label**
+The nav bar's status indicator calls `GET /health` on page load and reflects the real response (green/red dot) rather than displaying a hardcoded "Live" badge. Small decision, but the difference between a UI element that's honest about backend state versus one that's purely decorative.
 
 ---
 
@@ -307,3 +320,7 @@ Current PR-AUC (0.288) and F1 (0.36 at tuned threshold) are a real but modest li
 
 ### Risk badge cutoffs are placeholders (Day 4)
 The 0.3/0.6 green/amber/red boundaries were set without inspecting the real probability distribution on the test set. Revisit once more predictions have been observed, ideally against `metrics.json`'s score distribution.
+
+### Hardcoded local API URL (Day 5)
+
+`frontend/.env.local` currently sets `NEXT_PUBLIC_API_URL=http://localhost:8000`, which only works for local dev. Once the backend is deployed to Railway (Day 7), this needs to be updated to the live Railway URL — either via Vercel's environment variable settings (not `.env.local`, which won't be committed or deployed) or a separate `.env.production` file. Flagging now so it's not a last-minute surprise during deployment when the frontend silently fails to reach the API.

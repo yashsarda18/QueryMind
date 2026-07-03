@@ -9,8 +9,16 @@ from cache import get_cached_result, set_cached_result, check_rate_limit
 from ml_model import get_model
 from ml.features import load_single_order_raw, load_single_order_items_agg, build_inference_features
 from models import PredictRequest, PredictResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title = "QueryMind API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.get("/health")
 def health_check():
