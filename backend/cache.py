@@ -21,7 +21,7 @@ def get_cached_result(question: str):
 
 def set_cached_result(question: str, result: dict):
     key = get_cache_key(question)
-    r.set(key, json.dumps(result), ex=CACHE_TTL_SECONDS)
+    r.set(key, json.dumps(result, default=str), ex=CACHE_TTL_SECONDS)
     
 def check_rate_limit(client_id: str, max_requests: int = 20, window_seconds: int = 60) -> bool:
     key = f"ratelimit:{client_id}"

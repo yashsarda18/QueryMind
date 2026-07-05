@@ -10,6 +10,9 @@ from ml_model import get_model
 from ml.features import load_single_order_raw, load_single_order_items_agg, build_inference_features
 from models import PredictRequest, PredictResponse
 from fastapi.middleware.cors import CORSMiddleware
+from models import BatchPredictRequest, BatchPredictResponse, BatchPredictResult
+
+MAX_BATCH_SIZE = 25
 
 app = FastAPI(title = "QueryMind API")
 
@@ -69,4 +72,37 @@ def predict(request: PredictRequest):
     result = model.predict(features)
 
     return {"order_id": request.order_id, **result}
+
+@app.post("/predict/batch", response_model=BatchPredictResponse)
+def predict_batch(request: BatchPredictRequest):
+    if len(request.order_ids) > MAX_BATCH_SIZE:
+        raise HTTPException(status_code=400, detail=f"Max {MAX_BATCH_SIZE} order_ids per batch")
+
+    conn = get_connection()
+    model = get_model()
+    results = []
+
+    try:
+        for order_id in request.order_ids:
+            try:
+                order_row = load_single_order_raw(conn, order_id)
+                items_agg_row = load_single_order_items_agg(conn, order_id)
+
+                if order_row.empty or items_agg_row.empty:
+                    results.append(BatchPredictResult(order_id=order_id, error="order_id not found"))
+                    continue
+
+                features = build_inference_features(order_row, items_agg_row)
+                if features is None:
+                    results.append(BatchPredictResult(order_id=order_id, error="order_id not found"))
+                    continue
+
+                pred = model.predict(features)
+                results.append(BatchPredictResult(order_id=order_id, **pred))
+            except Exception as e:
+                results.append(BatchPredictResult(order_id=order_id, error=str(e)))
+    finally:
+        conn.close()
+
+    return {"results": results}
     

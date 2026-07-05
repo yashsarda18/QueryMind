@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Literal, Any
+from typing import List, Optional, Literal, Any
 from datetime import datetime
 
 class QueryRequest(BaseModel):
@@ -26,3 +26,16 @@ class PredictResponse(BaseModel):
     risk_score: float
     is_late_predicted: bool
     risk_badge: str
+
+class BatchPredictRequest(BaseModel):
+    order_ids: List[str]
+    
+class BatchPredictResult(BaseModel):
+    order_id: str
+    risk_score: Optional[float] = None
+    is_late_predicted: Optional[bool] = None
+    risk_badge: Optional[str] = None
+    error: Optional[str] = None
+    
+class BatchPredictResponse(BaseModel):
+    results: List[BatchPredictResult]

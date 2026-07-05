@@ -239,6 +239,41 @@ The original stack table listed shadcn/ui for "polished UI without deep frontend
 ### D033 — Live health-check status pill instead of a static "Live" label**
 The nav bar's status indicator calls `GET /health` on page load and reflects the real response (green/red dot) rather than displaying a hardcoded "Live" badge. Small decision, but the difference between a UI element that's honest about backend state versus one that's purely decorative.
 
+### D034 — Batch /predict endpoint added (single connection, capped, per-row isolated)
+
+The frontend's original approach to showing delivery risk for a table of order-level query
+results was to call the existing single-order /predict endpoint once per row via
+Promise.allSettled — functionally correct, but it meant N HTTP round-trips and N separate
+DB connections for a single user action (e.g. "show me the 10 most recent orders").
+
+Replaced with a dedicated POST /predict/batch endpoint that accepts a list of order_ids and
+returns a list of results, opening exactly one DB connection for the whole batch rather than
+one per order. Capped server-side at MAX_BATCH_SIZE = 25, independent of whatever the
+frontend sends, so a future frontend bug (or a malicious caller) can't force an unbounded
+number of DB round-trips in one request.
+
+Each order_id is processed inside its own try/except within the loop, so one bad or
+edge-case order_id (e.g. missing feature data) returns an error field for that row only,
+rather than failing the entire batch. The outer try/finally guarantees the connection closes
+even if something unexpected happens mid-loop.
+
+Frontend fan-out is capped at RISK_ROW_LIMIT = 10 rows per query result, independent of the
+backend's cap of 25 — this is a UI/UX limit (don't badge a huge results table), not a
+mirror of the server-side safety limit.
+
+### D035 — Canceled orders correctly return no risk prediction
+
+Discovered while testing D034: querying the 10 most recent orders returned all "canceled"
+status orders, and every single one came back from /predict/batch with
+error: "order_id not found" instead of a risk score.
+
+Root cause: canceled orders never generate an order_items row (cancellation happens before
+shipping/payment confirmation), so load_single_order_items_agg() returns empty for them.
+This is correct behavior, not a bug — predicting delivery delay for an order that was never
+going to ship doesn't make conceptual sense, consistent with the reasoning already
+established in D028. Confirmed real, differentiated badges (mix of green/amber) when
+re-tested against a query filtered to "delivered" orders instead.
+
 ---
 
 ## Data Insights
@@ -324,3 +359,23 @@ The 0.3/0.6 green/amber/red boundaries were set without inspecting the real prob
 ### Hardcoded local API URL (Day 5)
 
 `frontend/.env.local` currently sets `NEXT_PUBLIC_API_URL=http://localhost:8000`, which only works for local dev. Once the backend is deployed to Railway (Day 7), this needs to be updated to the live Railway URL — either via Vercel's environment variable settings (not `.env.local`, which won't be committed or deployed) or a separate `.env.production` file. Flagging now so it's not a last-minute surprise during deployment when the frontend silently fails to reach the API.
+
+### Redis failure surfaces as a slow timeout, not a clear error (Day 6)
+If Redis is down, check_rate_limit() throws an uncaught ConnectionError inside /query,
+which currently manifests as a ~15s frontend timeout (the request hangs on Redis's own
+connection retry before FastAPI ever returns an error) rather than a fast, explicit failure.
+A more resilient version would catch that specific exception and either fail open (skip
+rate limiting, log a warning) and continue serving the request, or fail fast with a 503 and
+a clear message. Not fixed now — deferred as a graceful-degradation improvement, and a
+reasonable candidate for a short STAR-adjacent story if time allows.
+
+### datetime not JSON-serializable when caching query results (Day 6)
+set_cached_result() in cache.py called json.dumps(result) directly. Any query whose results
+included a timestamp column (e.g. order_purchase_timestamp, returned by psycopg3 as a Python
+datetime object) crashed with TypeError: Object of type datetime is not JSON serializable —
+the query itself succeeded, but caching the result failed and took the whole request down
+with it.
+
+Fixed by changing the call to json.dumps(result, default=str), which falls back to str()
+for any type the default JSON encoder doesn't recognize. Low-risk fix since the cached
+value is only ever read back and returned as-is, not used for date arithmetic.

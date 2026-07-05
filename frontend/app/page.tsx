@@ -3,6 +3,9 @@
 import { useEffect, useState } from "react";
 import HeroPipeline from "@/components/HeroPipeline";
 import ScrollReveal from "@/components/ScrollReveal";
+import QueryChips from "@/components/QueryChips";
+import ResultsChart from "@/components/ResultsChart";
+import RiskBadge from "@/components/RiskBadge";
 
 interface QueryResponse {
   status: "success" | "unanswerable" | "invalid_sql" | "execution_error";
@@ -11,8 +14,18 @@ interface QueryResponse {
   results?: Record<string, any>[];
 }
 
+interface BatchPredictResult {
+  order_id: string;
+  risk_score?: number;
+  is_late_predicted?: boolean;
+  risk_badge?: string;
+  error?: string;
+}
+
 const GITHUB_URL = "https://github.com/yashsarda18";
 const LINKEDIN_URL = "https://linkedin.com/in/yashsarda18";
+const RISK_ROW_LIMIT = 10; // matches MAX_BATCH_SIZE headroom server-side (25) with margin
+const REQUEST_TIMEOUT_MS = 15000;
 
 function LivePill() {
   const [live, setLive] = useState<boolean | null>(null);
@@ -39,30 +52,88 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<QueryResponse | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [riskMap, setRiskMap] = useState<Record<string, BatchPredictResult | "loading" | "error">>({});
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!question.trim()) return;
+  async function runQuery(q: string) {
+    if (!q.trim()) return;
     setLoading(true);
     setResult(null);
     setFetchError(null);
+    setRiskMap({});
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question: q }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
       const data: QueryResponse = await res.json();
       setResult(data);
+
+      if (data.status === "success" && data.results?.length) {
+        const cols = Object.keys(data.results[0]);
+        if (cols.includes("order_id")) {
+          enrichWithRisk(data.results.slice(0, RISK_ROW_LIMIT));
+        }
+      }
     } catch (err: any) {
-      setFetchError(err.message);
+      if (err.name === "AbortError") {
+        setFetchError("Request timed out - the backend may be asleep (Railway free tier cold start) or unreachable.");
+      } else {
+        setFetchError(err.message);
+      }
     } finally {
+      clearTimeout(timeoutId);
       setLoading(false);
     }
   }
 
+  async function enrichWithRisk(rows: Record<string, any>[]) {
+    const ids = rows.map((r) => String(r.order_id));
+    setRiskMap(Object.fromEntries(ids.map((id) => [id, "loading" as const])));
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/predict/batch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order_ids: ids }),
+      });
+      if (!res.ok) throw new Error("batch predict failed");
+      const data: { results: BatchPredictResult[] } = await res.json();
+
+      setRiskMap((prev) => {
+        const next = { ...prev };
+        data.results.forEach((r) => {
+          next[r.order_id] = r.error ? "error" : r;
+        });
+        return next;
+      });
+    } catch {
+      setRiskMap((prev) => {
+        const next = { ...prev };
+        ids.forEach((id) => (next[id] = "error"));
+        return next;
+      });
+    }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    runQuery(question);
+  }
+
+  function handleChipSelect(q: string) {
+    setQuestion(q);
+    runQuery(q);
+  }
+
   const columns = result?.results?.length ? Object.keys(result.results[0]) : [];
+  const hasOrderId = columns.includes("order_id");
 
   return (
     <main className="min-h-screen bg-[var(--bg)] text-[var(--text)] overflow-x-hidden">
@@ -123,10 +194,10 @@ export default function Home() {
         <section id="try-it" className="max-w-4xl mx-auto px-8 py-16 space-y-6">
           <div>
             <h2 className="font-display text-xl font-medium">Ask a question</h2>
-            <p className="text-[var(--text-dim)] text-sm mt-1">
-              Try: "What are the top 5 product categories by revenue?"
-            </p>
+            <p className="text-[var(--text-dim)] text-sm mt-1">Try one of these, or type your own:</p>
           </div>
+
+          <QueryChips onSelect={handleChipSelect} />
 
           <form onSubmit={handleSubmit} className="flex gap-2">
             <input
@@ -146,7 +217,7 @@ export default function Home() {
 
           {fetchError && (
             <div className="bg-[var(--surface)] border border-red-800 text-red-300 rounded-lg p-4 text-sm">
-              Network error: {fetchError}
+              {fetchError}
             </div>
           )}
 
@@ -169,33 +240,59 @@ export default function Home() {
               )}
 
               {result.results && result.results.length > 0 ? (
-                <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
-                  <table className="w-full text-sm">
-                    <thead className="bg-[var(--surface)]">
-                      <tr>
-                        {columns.map((col) => (
-                          <th
-                            key={col}
-                            className="text-left px-3 py-2.5 border-b border-[var(--border)] font-mono text-xs text-[var(--text-dim)]"
-                          >
-                            {col}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {result.results.map((row, i) => (
-                        <tr key={i} className="border-b border-[var(--border)] last:border-0">
+                <>
+                  <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
+                    <table className="w-full text-sm">
+                      <thead className="bg-[var(--surface)]">
+                        <tr>
                           {columns.map((col) => (
-                            <td key={col} className="px-3 py-2.5">
-                              {String(row[col])}
-                            </td>
+                            <th
+                              key={col}
+                              className="text-left px-3 py-2.5 border-b border-[var(--border)] font-mono text-xs text-[var(--text-dim)]"
+                            >
+                              {col}
+                            </th>
                           ))}
+                          {hasOrderId && (
+                            <th className="text-left px-3 py-2.5 border-b border-[var(--border)] font-mono text-xs text-[var(--text-dim)]">
+                              delivery risk
+                            </th>
+                          )}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {result.results.map((row, i) => {
+                          const orderId = hasOrderId ? String(row.order_id) : undefined;
+                          const risk = orderId ? riskMap[orderId] : undefined;
+                          return (
+                            <tr key={i} className="border-b border-[var(--border)] last:border-0">
+                              {columns.map((col) => (
+                                <td key={col} className="px-3 py-2.5">
+                                  {String(row[col])}
+                                </td>
+                              ))}
+                              {hasOrderId && (
+                                <td className="px-3 py-2.5">
+                                  {orderId && i < RISK_ROW_LIMIT ? (
+                                    <RiskBadge
+                                      loading={risk === "loading"}
+                                      error={risk === "error"}
+                                      badge={risk && risk !== "loading" && risk !== "error" ? risk.risk_badge : undefined}
+                                      score={risk && risk !== "loading" && risk !== "error" ? risk.risk_score : undefined}
+                                    />
+                                  ) : (
+                                    <span className="text-xs font-mono text-[var(--text-dim)]">-</span>
+                                  )}
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!hasOrderId && <ResultsChart rows={result.results} />}
+                </>
               ) : (
                 <div className="text-[var(--text-dim)] text-sm">Query returned no rows.</div>
               )}
