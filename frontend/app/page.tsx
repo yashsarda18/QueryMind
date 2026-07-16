@@ -6,6 +6,7 @@ import ScrollReveal from "@/components/ScrollReveal";
 import QueryChips from "@/components/QueryChips";
 import ResultsChart from "@/components/ResultsChart";
 import RiskBadge from "@/components/RiskBadge";
+import DeliveryRiskSection from "@/components/DeliveryRiskSection";
 
 interface QueryResponse {
   status: "success" | "unanswerable" | "invalid_sql" | "execution_error";
@@ -300,6 +301,10 @@ export default function Home() {
           )}
         </section>
       </ScrollReveal>
+
+      <div className="max-w-4xl mx-auto px-8 pb-16">
+        <DeliveryRiskSection />
+      </div>
 
       <footer className="border-t border-[var(--border)] py-6 text-center text-xs text-[var(--text-dim)] font-mono">
         QueryMind - built by Yash Sarda ·{" "}
