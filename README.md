@@ -130,9 +130,9 @@ A typical workflow is:
 2. Create the database and user matching `.env` values.
 3. Load the schema and data:
    ```bash
-   - `\i load_olist.sql`
-   - `\i add_foreign_keys.sql`
-   - `\i load_data.sql`
+   \i load_olist.sql
+   \i add_foreign_keys.sql
+   \i load_data.sql
    ```
 ### Example local frontend config
 
