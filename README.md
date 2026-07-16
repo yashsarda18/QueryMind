@@ -129,10 +129,11 @@ A typical workflow is:
 1. Start Postgres and Redis locally using `docker compose up -d`.
 2. Create the database and user matching `.env` values.
 3. Load the schema and data:
-   - `i load_olist.sql`
-   - `i add_foreign_keys.sql`
-   - `i load_data.sql`
-
+   ```bash
+   - `\i load_olist.sql`
+   - `\i add_foreign_keys.sql`
+   - `\i load_data.sql`
+   ```
 ### Example local frontend config
 
 `frontend/.env.local` should contain:
