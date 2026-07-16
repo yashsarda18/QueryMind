@@ -6,4 +6,4 @@
 \copy orders FROM 'olist_orders_dataset.csv' WITH (FORMAT csv, HEADER true);
 \copy order_items FROM 'olist_order_items_dataset.csv' WITH (FORMAT csv, HEADER true);
 \copy order_payments FROM 'olist_order_payments_dataset.csv' WITH (FORMAT csv, HEADER true);
-\copy order_reviews FROM 'olist_order_reviews_dataset.csv' WITH (FORMAT csv, HEADER true);
+\copy order_reviews FROM 'olist_order_reviews_dataset.csv' WITH (FORMAT csv, HEADER true, ENCODING 'LATIN1');
