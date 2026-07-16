@@ -79,3 +79,8 @@ create table if not exists product_category_name_translation (
     product_category_name varchar(100) primary key,
     product_category_name_english varchar(100)
 );
+insert into product_category_name_translation (product_category_name, product_category_name_english)
+values
+    ('pc_gamer', 'computers_gaming'),
+    ('portateis_cozinha_e_preparadores_de_alimentos', 'kitchen_portable_appliances')
+on conflict (product_category_name) do nothing;
